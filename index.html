@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luckysheet Example</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/css/pluginsCss.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/plugins.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet/dist/css/luckysheet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
+    <style>
+        #luckysheet {
+            width: 100%;
+            height: 600px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Luckysheet Interface</h1>
+    <input type="file" id="fileInput" />
+    <button id="newButton">New</button>
+    <button id="uploadButton">Upload</button>
+    <button id="loadButton">Load</button>
+    <button id="updateButton">Update</button>
+    <button id="downloadButton">Download</button>
+    <div id="luckysheet"></div>
+
+    <script>
+          luckysheet.create({
+            container: 'luckysheet'
+        });
+        let currentSheetId = null;
+
+       
+  
+        document.getElementById('newButton').addEventListener('click', () => {
+            saveCurrentSpreadsheet();
+            // if (currentSheetId !== null) {
+            //     saveCurrentSpreadsheet().then(() => {
+            //         // createNewSpreadsheet();
+            //     }).catch(error => {
+            //         console.error('Error saving current spreadsheet:', error);
+            //     });
+            // } else {
+            //     createNewSpreadsheet();
+            // }
+        });
+/* FUncion para poder crear una nueva hoja de calculo*/
+        function createNewSpreadsheet() {
+            luckysheet.create({
+                container: 'luckysheet',
+               
+            });
+            currentSheetId = null; // Resetea el ID actual, indicando que es un nuevo archivo
+        }
+        async function saveCurrentSpreadsheet() {
+            const sheetData = luckysheet.getAllSheets();
+            const workbook = XLSX.utils.book_new();
+
+            sheetData.forEach(sheet => {
+                const ws = XLSX.utils.aoa_to_sheet(sheet.data);
+                ws['!cols'] = sheet.config;
+                XLSX.utils.book_append_sheet(workbook, ws, sheet.name);
+            });
+
+            const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'binary' });
+
+            function s2ab(s) {
+                const buf = new ArrayBuffer(s.length);
+                const view = new Uint8Array(buf);
+                for (let i = 0; i < s.length; i++) {
+                    view[i] = s.charCodeAt(i) & 0xFF;
+                }
+                return buf;
+            }
+
+            const blob = new Blob([s2ab(wbout)], { type: 'application/octet-stream' });
+
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = function () {
+                    const base64Data = btoa(reader.result);
+                    const saveMethod =  'POST';
+                    const url =  'https://localhost:7292/api/Spreadsheet/saveNew';
+                    
+                    fetch(url, {
+                        method: saveMethod,
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ data: base64Data, title: `Spreadsheet ${ 'New'}` })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        alert('Spreadsheet saved successfully!');
+                        if (!currentSheetId) {
+                            currentSheetId = data.id; // Asumiendo que la respuesta contiene el nuevo ID
+                        }
+                        resolve();
+                    })
+                    .catch(error => {
+                        reject(error);
+                    });
+                };
+                reader.readAsBinaryString(blob);
+            });
+        }
+/* FUncion para poder cargar un documento en  una nueva hoja de calculo*/
+
+        // https://localhost:7292/api/Spreadsheet/saveNew
+        document.getElementById('uploadButton').addEventListener('click', () => {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                alert('Please select a file to upload.');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                const workbook = XLSX.read(e.target.result, { type: 'binary' });
+                const sheetNames = workbook.SheetNames;
+                const sheets = sheetNames.map(name => {
+                    const sheetData = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '' });
+                    const range = XLSX.utils.decode_range(workbook.Sheets[name]['!ref']);
+                    const data = [];
+                    for (let R = range.s.r; R <= range.e.r; ++R) {
+                        const row = [];
+                        for (let C = range.s.c; C <= range.e.c; ++C) {
+                            const cell_address = { c: C, r: R };
+                            const cell_ref = XLSX.utils.encode_cell(cell_address);
+                            const cell = workbook.Sheets[name][cell_ref];
+                            row.push(cell ? cell.v : '');
+                        }
+                        data.push(row);
+                    }
+                    return {
+                        name: name,
+                        data: data,
+                        config: workbook.Sheets[name]['!cols'] || []
+                    };
+                });
+
+                luckysheet.create({
+                    container: 'luckysheet',
+                    data: sheets,
+                    showinfobar: false
+                });
+            };
+            reader.readAsBinaryString(file);
+            
+        });
+        /* FUncion para poder cargar desde el endpoint un archivo desconvertirlo de base 64 y montarlo*/
+
+        document.getElementById('loadButton').addEventListener('click', () => {
+            const id = prompt('Enter the ID of the spreadsheet to load:');
+            if (!id) {
+                alert('Please enter a valid ID.');
+                return;
+            }
+
+            fetch(`https://localhost:7292/api/Spreadsheet/${id}`)
+                .then(response => response.json())
+                .then(data => {
+                    const base64 = data.data;
+                    const binaryString = atob(base64);
+                    const len = binaryString.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+
+                    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                    const reader = new FileReader();
+                    reader.onload = function (e) {
+                        const workbook = XLSX.read(e.target.result, { type: 'binary' });
+                        const sheetNames = workbook.SheetNames;
+                        const sheets = sheetNames.map(name => {
+                            const sheet = workbook.Sheets[name];
+                            const sheetData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+                            const data = sheetData.map((row, rowIndex) => row.map((cell, colIndex) => {
+                                const cellAddress = { c: colIndex, r: rowIndex };
+                                const cellRef = XLSX.utils.encode_cell(cellAddress);
+                                const cellData = sheet[cellRef] || {};
+                                return {
+                                    v: cell,
+                                    m: cellData.w || cell, // Display value
+                                    bg: cellData.s && cellData.s.fill && cellData.s.fill.fgColor ? `#${cellData.s.fill.fgColor.rgb}` : null // Background color
+                                };
+                            }));
+
+                            const merges = sheet['!merges'] ? sheet['!merges'].map(merge => ({
+                                r: merge.s.r, c: merge.s.c,
+                                rs: merge.e.r - merge.s.r + 1,
+                                cs: merge.e.c - merge.s.c + 1
+                            })) : [];
+
+                            return {
+                                name: name,
+                                data: data,
+                                config: sheet['!cols'] || [],
+                                merges: merges
+                            };
+                        });
+
+                        luckysheet.create({
+                            container: 'luckysheet',
+                            data: sheets,
+                            showinfobar: false
+                        });
+                    };
+                    reader.readAsBinaryString(blob);
+
+                    currentSheetId = id;
+                })
+                .catch(error => {
+                    console.error('Error loading file:', error);
+                    alert('Error loading file: ' + error.message);
+                });
+            // const id = prompt('Enter the ID of the spreadsheet to load:');
+            // if (!id) {
+            //     alert('Please enter a valid ID.');
+            //     return;
+            // }
+
+            // fetch(`https://localhost:7292/api/Spreadsheet/${id}`)
+            //     .then(response => response.json())
+            //     .then(data => {
+            //         const base64 = data.data;
+            //         const binaryString = atob(base64);
+            //         const len = binaryString.length;
+            //         const bytes = new Uint8Array(len);
+            //         for (let i = 0; i < len; i++) {
+            //             bytes[i] = binaryString.charCodeAt(i);
+            //         }
+
+            //         const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            //         const reader = new FileReader();
+            //         reader.onload = function (e) {
+            //             const workbook = XLSX.read(e.target.result, { type: 'binary' });
+            //             const sheetNames = workbook.SheetNames;
+            //             const sheets = sheetNames.map(name => {
+            //                 const sheetData = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '' });
+            //                 const range = XLSX.utils.decode_range(workbook.Sheets[name]['!ref']);
+            //                 const data = [];
+            //                 for (let R = range.s.r; R <= range.e.r; ++R) {
+            //                     const row = [];
+            //                     for (let C = range.s.c; C <= range.e.c; ++C) {
+            //                         const cell_address = { c: C, r: R };
+            //                         const cell_ref = XLSX.utils.encode_cell(cell_address);
+            //                         const cell = workbook.Sheets[name][cell_ref];
+            //                         row.push(cell ? cell.v : '');
+            //                     }
+            //                     data.push(row);
+            //                 }
+            //                 return {
+            //                     name: name,
+            //                     data: data,
+            //                     config: workbook.Sheets[name]['!cols'] || []
+            //                 };
+            //             });
+
+            //             luckysheet.create({
+            //                 container: 'luckysheet',
+            //                 data: sheets,
+            //                 showinfobar: false
+            //             });
+            //         };
+            //         reader.readAsBinaryString(blob);
+
+            //         currentSheetId = id;
+            //     })
+            //     .catch(error => {
+            //         console.error('Error loading file:', error);
+            //         alert('Error loading file: ' + error.message);
+            //     });
+           
+        });
+
+     
+/* FUncion para poder actualizar la hoja de calculo en un nuevo documento*/
+
+        document.getElementById('updateButton').addEventListener('click', () => {
+            if (!currentSheetId) {
+                alert('No spreadsheet loaded.');
+                return;
+            }
+
+            const sheetData = luckysheet.getAllSheets();
+            const workbook = XLSX.utils.book_new();
+
+            sheetData.forEach(sheet => {
+                const ws = XLSX.utils.aoa_to_sheet(sheet.data);
+                XLSX.utils.book_append_sheet(workbook, ws, sheet.name);
+            });
+
+            const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'binary' });
+
+            function s2ab(s) {
+                const buf = new ArrayBuffer(s.length);
+                const view = new Uint8Array(buf);
+                for (let i = 0; i < s.length; i++) {
+                    view[i] = s.charCodeAt(i) & 0xFF;
+                }
+                return buf;
+            }
+
+            const blob = new Blob([s2ab(wbout)], { type: 'application/octet-stream' });
+
+            const reader = new FileReader();
+            reader.onload = function () {
+                const base64Data = btoa(reader.result);
+                fetch(`https://localhost:7292/api/Spreadsheet/${currentSheetId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ data: base64Data, title: `Spreadsheet ${currentSheetId}` })
+                })
+                .then(response => response.text())
+                .then(message => {
+                    alert('Spreadsheet updated successfully!');
+                })
+                .catch(error => {
+                    console.error('Error updating file:', error);
+                });
+            };
+            reader.readAsBinaryString(blob);
+           
+        });
+        /* FUncion para poder descargar el archivo desde la hoja de calculo*/
+
+
+        document.getElementById('downloadButton').addEventListener('click', () => {
+            if (!currentSheetId) {
+                alert('No spreadsheet loaded.');
+                return;
+            }
+          //  https://localhost:7292/api/Spreadsheet/download/5
+            fetch(`https://localhost:7292/api/Spreadsheet/download/${currentSheetId}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.blob();
+                })
+                .then(blob => {
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.style.display = 'none';
+                    a.href = url;
+                    a.download = `spreadsheet_${currentSheetId}.xlsx`;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                })
+                .catch(error => {
+                    console.error('Error downloading file:', error);
+                });
+        });
+    </script>
+</body>
+</html>
